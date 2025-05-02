@@ -1,7 +1,6 @@
 ﻿using System.Linq.Expressions;
 using Newtonsoft.Json;
 using System.Reflection;
-using System.Globalization;
 using System.ComponentModel.DataAnnotations.Schema;
 using System.Text;
 
@@ -14,9 +13,9 @@ public class SqlBuilderApp
 						.Where(x => x.Id == "1")
 						.GroupBy(x => x.BreakType)
 						.OrderBy(x => x.CreatedAt)
-						.Skip(10)
+						.Offset(10)
 						.Limit(100)
-						.ToString();
+						.Build();
 		Console.WriteLine(statement);
 	}
 }
@@ -48,76 +47,149 @@ public class SqlQueryBuilder<T>
 
     public SqlQueryBuilder(string tableName)
     {
-        _tableName = tableName ?? throw new ArgumentNullException(nameof(tableName));
+        if (string.IsNullOrWhiteSpace(tableName))
+            throw new ArgumentException("Table name cannot be null or empty", nameof(tableName));
+        
+        _tableName = tableName;
     }
 
     public SqlQueryBuilder<T> Select(
-    Expression<Func<T, object>> columns,
-    params (Expression<Func<T, object>> column, string function, string alias)[] aggregates)
-{
-    // Handle anonymous type or single column selection
-    if (columns.Body is NewExpression newExpression)
+        Expression<Func<T, object>> columns,
+        params (Expression<Func<T, object>> column, string function, string alias)[] aggregates)
     {
-        // Anonymous type projection
-        foreach (var argument in newExpression.Arguments)
+        if (columns == null)
+            throw new ArgumentNullException(nameof(columns));
+
+        try
         {
-            if (argument is MemberExpression memberExpression)
+            // Handle main projection (anonymous type or single column)
+            if (columns.Body is NewExpression newExpr)
             {
-                _selectColumns.Add(GetColumnName(Expression.Lambda<Func<T, object>>(
-                    memberExpression, columns.Parameters)));
+                ProcessNewExpression(newExpr);
+            }
+            else
+            {
+                _selectColumns.Add(GetColumnName(columns));
+            }
+
+            // Handle aggregates
+            foreach (var (column, function, alias) in aggregates)
+            {
+                if (column == null)
+                    throw new ArgumentNullException(nameof(column));
+                if (string.IsNullOrWhiteSpace(function))
+                    throw new ArgumentException("Aggregate function cannot be null or empty", nameof(function));
+                if (string.IsNullOrWhiteSpace(alias))
+                    throw new ArgumentException("Alias cannot be null or empty", nameof(alias));
+
+                var columnName = GetColumnName(column);
+                _selectColumns.Add($"{function.ToUpper()}({columnName}) AS \"{alias}\"");
+            }
+        }
+        catch (Exception ex)
+        {
+            throw new ArgumentException("Invalid SELECT expression", ex);
+        }
+
+        return this;
+    }
+
+    private void ProcessNewExpression(NewExpression newExpr)
+    {
+        foreach (var arg in newExpr.Arguments)
+        {
+            switch (arg)
+            {
+                case MemberExpression m:
+                    _selectColumns.Add(GetColumnNameFromMember(m));
+                    break;
+                case UnaryExpression u when u.Operand is MemberExpression m:
+                    _selectColumns.Add(GetColumnNameFromMember(m));
+                    break;
+                default:
+                    throw new ArgumentException("Anonymous type projections can only contain member access expressions");
             }
         }
     }
-    else
-    {
-        // Single column selection
-        _selectColumns.Add(GetColumnName(columns));
-    }
-
-    // Handle aggregate functions
-    foreach (var (column, function, alias) in aggregates)
-    {
-        var columnName = GetColumnName(column);
-        _selectColumns.Add($"{function}({columnName}) AS {alias}");
-    }
-
-    return this;
-}
 
     public SqlQueryBuilder<T> Where(Expression<Func<T, bool>> predicate)
     {
-        var condition = ExpressionToSql(predicate.Body);
-        _whereConditions.Add(condition);
+        if (predicate == null)
+            throw new ArgumentNullException(nameof(predicate));
+
+        try
+        {
+            var condition = ExpressionToSql(predicate.Body);
+            _whereConditions.Add(condition);
+        }
+        catch (Exception ex)
+        {
+            throw new ArgumentException("Invalid WHERE expression", ex);
+        }
+
         return this;
     }
 
     public SqlQueryBuilder<T> GroupBy(params Expression<Func<T, object>>[] columns)
     {
-        foreach (var column in columns)
+        if (columns == null || columns.Length == 0)
+            throw new ArgumentException("At least one GROUP BY column must be specified");
+
+        try
         {
-            var columnNames = GetColumnNamesFromExpression(column);
-            _groupByColumns.AddRange(columnNames);
+            foreach (var column in columns)
+            {
+                var columnNames = GetColumnNamesFromExpression(column);
+                _groupByColumns.AddRange(columnNames);
+            }
         }
+        catch (Exception ex)
+        {
+            throw new ArgumentException("Invalid GROUP BY expression", ex);
+        }
+
         return this;
     }
 
     public SqlQueryBuilder<T> OrderBy(params Expression<Func<T, object>>[] columns)
     {
-        foreach (var column in columns)
+        if (columns == null || columns.Length == 0)
+            throw new ArgumentException("At least one ORDER BY column must be specified");
+
+        try
         {
-            var columnNames = GetColumnNamesFromExpression(column);
-            _orderByColumns.AddRange(columnNames.Select(c => $"{c} ASC"));
+            foreach (var column in columns)
+            {
+                var columnNames = GetColumnNamesFromExpression(column);
+                _orderByColumns.AddRange(columnNames.Select(c => $"{c} ASC"));
+            }
         }
+        catch (Exception ex)
+        {
+            throw new ArgumentException("Invalid ORDER BY expression", ex);
+        }
+
         return this;
     }
 
     public SqlQueryBuilder<T> OrderByDescending(params Expression<Func<T, object>>[] columns)
     {
-        foreach (var column in columns)
+        if (columns == null || columns.Length == 0)
+            throw new ArgumentException("At least one ORDER BY column must be specified");
+
+        try
         {
-            var columnNames = GetColumnNamesFromExpression(column);
-            _orderByColumns.AddRange(columnNames.Select(c => $"{c} DESC"));
+            foreach (var column in columns)
+            {
+                var columnNames = GetColumnNamesFromExpression(column);
+                _orderByColumns.AddRange(columnNames.Select(c => $"{c} DESC"));
+            }
         }
+        catch (Exception ex)
+        {
+            throw new ArgumentException("Invalid ORDER BY expression", ex);
+        }
+
         return this;
     }
 
@@ -129,12 +201,18 @@ public class SqlQueryBuilder<T>
 
     public SqlQueryBuilder<T> Limit(int limit)
     {
+        if (limit <= 0)
+            throw new ArgumentException("LIMIT must be greater than 0", nameof(limit));
+        
         _limit = limit;
         return this;
     }
 
-    public SqlQueryBuilder<T> Skip(int offset)
+    public SqlQueryBuilder<T> Offset(int offset)
     {
+        if (offset < 0)
+            throw new ArgumentException("OFFSET must be 0 or greater", nameof(offset));
+        
         _offset = offset;
         return this;
     }
@@ -147,163 +225,157 @@ public class SqlQueryBuilder<T>
 
     public string Build()
     {
+        if (_selectColumns.Count == 0 && _groupByColumns.Count > 0)
+            throw new InvalidOperationException("When using GROUP BY, you must specify columns in SELECT");
+
         var query = new StringBuilder();
 
         // SELECT clause
         query.Append("SELECT ");
         if (_distinct) query.Append("DISTINCT ");
-        
-        if (_selectColumns.Count == 0)
-        {
-            query.Append("*");
-        }
-        else
-        {
-            query.Append(string.Join(", ", _selectColumns));
-        }
+        query.Append(_selectColumns.Count == 0 ? "*" : string.Join(", ", _selectColumns));
 
         // FROM clause
         query.Append($" FROM \"{_tableName}\"");
 
         // WHERE clause
         if (_whereConditions.Count > 0)
-        {
-            query.Append(" WHERE ");
-            query.Append(string.Join(" AND ", _whereConditions));
-        }
+            query.Append(" WHERE ").Append(string.Join(" AND ", _whereConditions));
 
         // GROUP BY clause
         if (_groupByColumns.Count > 0)
-        {
-            query.Append(" GROUP BY ");
-            query.Append(string.Join(", ", _groupByColumns));
-        }
+            query.Append(" GROUP BY ").Append(string.Join(", ", _groupByColumns));
 
         // ORDER BY clause
         if (_orderByColumns.Count > 0)
-        {
-            query.Append(" ORDER BY ");
-            query.Append(string.Join(", ", _orderByColumns));
-        }
+            query.Append(" ORDER BY ").Append(string.Join(", ", _orderByColumns));
 
-        // LIMIT clause
-        if (_limit.HasValue)
-        {
-            query.Append($" LIMIT {_limit.Value}");
-        }
+        // LIMIT/OFFSET
+        if (_limit.HasValue) query.Append($" LIMIT {_limit.Value}");
+        if (_offset.HasValue) query.Append($" OFFSET {_offset.Value}");
 
-        // OFFSET clause
-        if (_offset.HasValue)
-        {
-            query.Append($" OFFSET {_offset.Value}");
-        }
-
-        // FOR UPDATE clause
-        if (_forUpdate)
-        {
-            query.Append(" FOR UPDATE");
-        }
+        // FOR UPDATE
+        if (_forUpdate) query.Append(" FOR UPDATE");
 
         return query.ToString();
     }
 
     private string GetColumnName(Expression<Func<T, object>> expression)
-{
-    MemberExpression memberExpression = null;
-
-    if (expression.Body is MemberExpression memExpr)
     {
-        memberExpression = memExpr;
-    }
-    else if (expression.Body is UnaryExpression unaryExpr && 
-            unaryExpr.Operand is MemberExpression unaryMemExpr)
-    {
-        memberExpression = unaryMemExpr;
-    }
+        var parameter = Expression.Parameter(typeof(T), "x");
+        var visitor = new ParameterReplaceVisitor(expression.Parameters[0], parameter);
+        var newBody = visitor.Visit(expression.Body);
 
-    if (memberExpression == null)
-        throw new ArgumentException("Invalid member expression");
-
-    // Check for Column attribute
-    var columnAttr = memberExpression.Member.GetCustomAttribute<ColumnAttribute>();
-    if (columnAttr != null)
-    {
-        return $"\"{columnAttr.Name}\"";
+        switch (newBody)
+        {
+            case MemberExpression m:
+                return GetColumnNameFromMember(m);
+            case UnaryExpression u when u.Operand is MemberExpression m:
+                return GetColumnNameFromMember(m);
+            default:
+                throw new ArgumentException("Expression must be a member access");
+        }
     }
-    
-    return $"\"{memberExpression.Member.Name}\"";
-}
 
     private List<string> GetColumnNamesFromExpression(Expression<Func<T, object>> expression)
     {
-        // Handle anonymous types and multiple columns
-        if (expression.Body is NewExpression newExpression)
+        var parameter = Expression.Parameter(typeof(T), "x");
+        var visitor = new ParameterReplaceVisitor(expression.Parameters[0], parameter);
+        var newBody = visitor.Visit(expression.Body);
+
+        if (newBody is NewExpression newExpr)
         {
-            var columnNames = new List<string>();
-            foreach (var argument in newExpression.Arguments)
+            var names = new List<string>();
+            foreach (var arg in newExpr.Arguments)
             {
-                if (argument is MemberExpression memberExpression)
+                switch (arg)
                 {
-                    columnNames.Add(GetColumnName(Expression.Lambda<Func<T, object>>(memberExpression)));
+                    case MemberExpression m:
+                        names.Add(GetColumnNameFromMember(m));
+                        break;
+                    case UnaryExpression u when u.Operand is MemberExpression m:
+                        names.Add(GetColumnNameFromMember(m));
+                        break;
+                    default:
+                        throw new ArgumentException("Anonymous type projections can only contain member access expressions");
                 }
             }
-            return columnNames;
+            return names;
         }
 
-        // Handle single column
         return new List<string> { GetColumnName(expression) };
+    }
+
+    private string GetColumnNameFromMember(MemberExpression memberExpression)
+    {
+        var columnAttr = memberExpression.Member.GetCustomAttribute<ColumnAttribute>();
+        return columnAttr != null ? $"\"{columnAttr.Name}\"" : $"\"{memberExpression.Member.Name}\"";
     }
 
     private string ExpressionToSql(Expression expression)
     {
-        switch (expression.NodeType)
+        switch (expression)
         {
-            case ExpressionType.Equal:
-                var equalExpr = (BinaryExpression)expression;
-                return $"{ExpressionToSql(equalExpr.Left)} = {ExpressionToSql(equalExpr.Right)}";
-                
-            case ExpressionType.NotEqual:
-                var notEqualExpr = (BinaryExpression)expression;
-                return $"{ExpressionToSql(notEqualExpr.Left)} <> {ExpressionToSql(notEqualExpr.Right)}";
-                
-            case ExpressionType.GreaterThan:
-                var gtExpr = (BinaryExpression)expression;
-                return $"{ExpressionToSql(gtExpr.Left)} > {ExpressionToSql(gtExpr.Right)}";
-                
-            case ExpressionType.GreaterThanOrEqual:
-                var gteExpr = (BinaryExpression)expression;
-                return $"{ExpressionToSql(gteExpr.Left)} >= {ExpressionToSql(gteExpr.Right)}";
-                
-            case ExpressionType.LessThan:
-                var ltExpr = (BinaryExpression)expression;
-                return $"{ExpressionToSql(ltExpr.Left)} < {ExpressionToSql(ltExpr.Right)}";
-                
-            case ExpressionType.LessThanOrEqual:
-                var lteExpr = (BinaryExpression)expression;
-                return $"{ExpressionToSql(lteExpr.Left)} <= {ExpressionToSql(lteExpr.Right)}";
-                
-            case ExpressionType.AndAlso:
-                var andExpr = (BinaryExpression)expression;
-                return $"({ExpressionToSql(andExpr.Left)} AND {ExpressionToSql(andExpr.Right)})";
-                
-            case ExpressionType.OrElse:
-                var orExpr = (BinaryExpression)expression;
-                return $"({ExpressionToSql(orExpr.Left)} OR {ExpressionToSql(orExpr.Right)})";
-                
-            case ExpressionType.MemberAccess:
-                var memberExpr = (MemberExpression)expression;
-                return GetColumnName(Expression.Lambda<Func<T, object>>(memberExpr));
-                
-            case ExpressionType.Constant:
-                var constExpr = (ConstantExpression)expression;
-                if (constExpr.Value is string)
-                    return $"'{constExpr.Value.ToString().Replace("'", "''")}'";
-                if (constExpr.Value is bool)
-                    return (bool)constExpr.Value ? "TRUE" : "FALSE";
-                return constExpr.Value?.ToString() ?? "NULL";
-                
+            case BinaryExpression binary:
+                return HandleBinaryExpression(binary);
+            case MemberExpression member:
+                return HandleMemberExpression(member);
+            case ConstantExpression constant:
+                return HandleConstantExpression(constant);
+            case UnaryExpression unary when unary.NodeType == ExpressionType.Convert:
+                return ExpressionToSql(unary.Operand);
             default:
-                throw new NotSupportedException($"Expression type {expression.NodeType} is not supported");
+                throw new NotSupportedException($"Expression type {expression.GetType().Name} is not supported");
+        }
+    }
+
+    private string HandleBinaryExpression(BinaryExpression binary)
+    {
+        var left = ExpressionToSql(binary.Left);
+        var right = ExpressionToSql(binary.Right);
+
+        return binary.NodeType switch
+        {
+            ExpressionType.Equal => $"{left} = {right}",
+            ExpressionType.NotEqual => $"{left} <> {right}",
+            ExpressionType.GreaterThan => $"{left} > {right}",
+            ExpressionType.GreaterThanOrEqual => $"{left} >= {right}",
+            ExpressionType.LessThan => $"{left} < {right}",
+            ExpressionType.LessThanOrEqual => $"{left} <= {right}",
+            ExpressionType.AndAlso => $"({left} AND {right})",
+            ExpressionType.OrElse => $"({left} OR {right})",
+            _ => throw new NotSupportedException($"Binary operator {binary.NodeType} is not supported")
+        };
+    }
+
+    private string HandleMemberExpression(MemberExpression member)
+    {
+        return GetColumnNameFromMember(member);
+    }
+
+    private string HandleConstantExpression(ConstantExpression constant)
+    {
+        if (constant.Value == null) return "NULL";
+        if (constant.Value is string str) return $"'{str.Replace("'", "''")}'";
+        if (constant.Value is bool b) return b ? "TRUE" : "FALSE";
+        if (constant.Value is DateTime dt) return $"'{dt:yyyy-MM-dd HH:mm:ss}'";
+        return constant.Value.ToString();
+    }
+
+    private class ParameterReplaceVisitor : ExpressionVisitor
+    {
+        private readonly ParameterExpression _oldParam;
+        private readonly ParameterExpression _newParam;
+
+        public ParameterReplaceVisitor(ParameterExpression oldParam, ParameterExpression newParam)
+        {
+            _oldParam = oldParam;
+            _newParam = newParam;
+        }
+
+        protected override Expression VisitParameter(ParameterExpression node)
+        {
+            return node == _oldParam ? _newParam : base.VisitParameter(node);
         }
     }
 }
