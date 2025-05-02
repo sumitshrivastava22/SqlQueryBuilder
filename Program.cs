@@ -52,36 +52,37 @@ public class SqlQueryBuilder<T>
     }
 
     public SqlQueryBuilder<T> Select(
-        Expression<Func<T, object>> columns,
-        params (Expression<Func<T, object>>, string, string)[] aggregates)
+    Expression<Func<T, object>> columns,
+    params (Expression<Func<T, object>> column, string function, string alias)[] aggregates)
+{
+    // Handle anonymous type or single column selection
+    if (columns.Body is NewExpression newExpression)
     {
-        // Handle anonymous type or single column selection
-        if (columns.Body is NewExpression newExpression)
+        // Anonymous type projection
+        foreach (var argument in newExpression.Arguments)
         {
-            // Anonymous type projection
-            foreach (var argument in newExpression.Arguments)
+            if (argument is MemberExpression memberExpression)
             {
-                if (argument is MemberExpression memberExpression)
-                {
-                    _selectColumns.Add(GetColumnName(Expression.Lambda<Func<T, object>>(memberExpression)));
-                }
+                _selectColumns.Add(GetColumnName(Expression.Lambda<Func<T, object>>(
+                    memberExpression, columns.Parameters)));
             }
         }
-        else
-        {
-            // Single column selection
-            _selectColumns.Add(GetColumnName(columns));
-        }
-
-        // Handle aggregate functions
-        foreach (var (expression, function, alias) in aggregates)
-        {
-            var columnName = GetColumnName(expression);
-            _selectColumns.Add($"{function}({columnName}) AS {alias}");
-        }
-
-        return this;
     }
+    else
+    {
+        // Single column selection
+        _selectColumns.Add(GetColumnName(columns));
+    }
+
+    // Handle aggregate functions
+    foreach (var (column, function, alias) in aggregates)
+    {
+        var columnName = GetColumnName(column);
+        _selectColumns.Add($"{function}({columnName}) AS {alias}");
+    }
+
+    return this;
+}
 
     public SqlQueryBuilder<T> Where(Expression<Func<T, bool>> predicate)
     {
@@ -207,31 +208,31 @@ public class SqlQueryBuilder<T>
     }
 
     private string GetColumnName(Expression<Func<T, object>> expression)
+{
+    MemberExpression memberExpression = null;
+
+    if (expression.Body is MemberExpression memExpr)
     {
-        MemberExpression memberExpression = null;
-
-        if (expression.Body is MemberExpression memExpr)
-        {
-            memberExpression = memExpr;
-        }
-        else if (expression.Body is UnaryExpression unaryExpr && 
-                unaryExpr.Operand is MemberExpression unaryMemExpr)
-        {
-            memberExpression = unaryMemExpr;
-        }
-
-        if (memberExpression == null)
-            throw new ArgumentException("Invalid member expression");
-
-        // Check for Column attribute
-        var columnAttr = memberExpression.Member.GetCustomAttribute<ColumnAttribute>();
-        if (columnAttr != null)
-        {
-            return $"\"{columnAttr.Name}\"";
-        }
-        
-        return $"\"{memberExpression.Member.Name}\"";
+        memberExpression = memExpr;
     }
+    else if (expression.Body is UnaryExpression unaryExpr && 
+            unaryExpr.Operand is MemberExpression unaryMemExpr)
+    {
+        memberExpression = unaryMemExpr;
+    }
+
+    if (memberExpression == null)
+        throw new ArgumentException("Invalid member expression");
+
+    // Check for Column attribute
+    var columnAttr = memberExpression.Member.GetCustomAttribute<ColumnAttribute>();
+    if (columnAttr != null)
+    {
+        return $"\"{columnAttr.Name}\"";
+    }
+    
+    return $"\"{memberExpression.Member.Name}\"";
+}
 
     private List<string> GetColumnNamesFromExpression(Expression<Func<T, object>> expression)
     {
