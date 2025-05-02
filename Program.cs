@@ -8,9 +8,11 @@ public class SqlBuilderApp
 {
 	public static void Main(string[] args)
 	{
+		string test = "test_value";
+
 		var statement = new SqlQueryBuilder<DatabricksDto>("DatabricksTable")
 						.Select(x => new { x.Id, x.Name, x.CreatedAt }, (x => x.BreakType, "COUNT", "TotalRecords"))
-						.Where(x => x.Id == "1")
+						.Where(x => x.Id == "1" && x.Name == test)
 						.GroupBy(x => x.BreakType)
 						.OrderBy(x => x.CreatedAt)
 						.Offset(10)
@@ -313,21 +315,21 @@ public class SqlQueryBuilder<T>
     }
 
     private string ExpressionToSql(Expression expression)
+{
+    switch (expression)
     {
-        switch (expression)
-        {
-            case BinaryExpression binary:
-                return HandleBinaryExpression(binary);
-            case MemberExpression member:
-                return HandleMemberExpression(member);
-            case ConstantExpression constant:
-                return HandleConstantExpression(constant);
-            case UnaryExpression unary when unary.NodeType == ExpressionType.Convert:
-                return ExpressionToSql(unary.Operand);
-            default:
-                throw new NotSupportedException($"Expression type {expression.GetType().Name} is not supported");
-        }
+        case BinaryExpression binary:
+            return HandleBinaryExpression(binary);
+        case MemberExpression member:
+            return HandleMemberExpression(member);
+        case ConstantExpression constant:
+            return HandleConstantExpression(constant);
+        case UnaryExpression unary when unary.NodeType == ExpressionType.Convert:
+            return ExpressionToSql(unary.Operand);
+        default:
+            throw new NotSupportedException($"Expression type {expression.GetType().Name} is not supported");
     }
+}
 
     private string HandleBinaryExpression(BinaryExpression binary)
     {
@@ -349,9 +351,38 @@ public class SqlQueryBuilder<T>
     }
 
     private string HandleMemberExpression(MemberExpression member)
+{
+    // Handle captured variables (closure variables)
+    if (member.Expression is ConstantExpression constant)
     {
-        return GetColumnNameFromMember(member);
+        var value = GetValueFromMemberExpression(member, constant);
+        return HandleConstantValue(value);
     }
+    
+    // Regular member access
+    return GetColumnNameFromMember(member);
+}
+
+private object GetValueFromMemberExpression(MemberExpression member, ConstantExpression constant)
+{
+    var objectMember = Expression.Convert(member, typeof(object));
+    var getterLambda = Expression.Lambda<Func<object>>(objectMember);
+    var getter = getterLambda.Compile();
+    return getter();
+}
+
+private string HandleConstantValue(object value)
+{
+    if (value == null) return "NULL";
+    if (value is string str) return $"'{str.Replace("'", "''")}'";
+    if (value is bool b) return b ? "TRUE" : "FALSE";
+    if (value is DateTime dt) return $"'{dt:yyyy-MM-dd HH:mm:ss}'";
+    if (value is DateTimeOffset dto) return $"'{dto:yyyy-MM-dd HH:mm:ss}'";
+    if (value is int || value is long || value is decimal || value is double || value is float)
+        return value.ToString();
+    
+    throw new NotSupportedException($"Value type {value.GetType().Name} is not supported");
+}
 
     private string HandleConstantExpression(ConstantExpression constant)
     {
